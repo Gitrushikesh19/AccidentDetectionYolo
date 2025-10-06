@@ -1,0 +1,6 @@
+train: D:\Datasets\Accident_Detection\train\images
+val:   D:\Datasets\Accident_Detection\val\images
+test:  D:\Datasets\Accident_Detection\test\images
+
+nc: 3
+names: ['minor','moderate','severe']
