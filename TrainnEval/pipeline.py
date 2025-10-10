@@ -1,11 +1,9 @@
 import threading
 from queue import Queue
-import time
 from TrainnEval.detector import DamageDetector
-from messaging.sms import get_sms_client
-from messaging.composer import compose_sos, save_annotated_image
+from messaging.composer import save_annotated_image
 from Config import config
-from messaging.send_latest_coords import parse_iso_timestamp, read_latest_for_device
+from messaging.send_latest_coords import notify_server_http
 from pathlib import Path
 
 class ImagePipeline:
@@ -52,8 +50,6 @@ class ImagePipeline:
         return None
 
     def postprocess_worker(self):
-        sms = get_sms_client(self.sms_config)
-        device_csv_path = Path("logs") / "device_locations.csv"
         while True:
             item = self.result_q.get()
             if item is None:
@@ -61,48 +57,31 @@ class ImagePipeline:
             img_path, severity, conf, detections = item
 
             try:
-                if severity == 'none' and conf < config.conf_thres:
-                    print(f"[INFO] skip SMS for {img_path}: severity={severity}, confidence={conf:.3f}")
+                if severity == 'none' or conf < config.conf_thres:
                     continue
 
                 device_id = ImagePipeline.extract_device_id_from_filename(img_path)
-                latlon = None
-                ts_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
+                if not device_id:
+                    print(f"[WARN] No device_id found in filename {img_path}")
+                    device_id = 'unknown'
 
-                if device_id:
-                    latest = None
-                    try:
-                        latest = read_latest_for_device(device_id, path=device_csv_path)
-
-                    except Exception as e:
-                        print("[WARN] Could not read device locations CSV:", e)
-
-                    if latest and latest.get("latitude") and latest.get("longitude"):
-                        lat = latest["latitude"]
-                        lon = latest["longitude"]
-                        latlon = (lat, lon)
-                        if latest.get("timestamp"):
-                            ts_parsed = latest["timestamp"]
-                            ts_str = ts_parsed.isoformat() if hasattr(ts_parsed, "isoformat") else str(ts_parsed)
-
+                # should send annotated image instead of image_path in notify_server_http
                 try:
-                    annotated = save_annotated_image(img_path, detections)
-                except Exception as e:
-                    print("[WARN] Could not save annotated image:", e)
-                    annotated = None
+                    annotated_img = save_annotated_image(img_path, detections)
 
-                try:
-                    msg_lines = compose_sos(ts_str, latlon, severity, img_path, annotated)
-                    # compose_sos returns a list in your composer; join to a string
-                    payload = "\n".join(map(str, msg_lines))
-                    # send in a short background thread to avoid blocking loop
-                    threading.Thread(target=sms.send, args=(payload,), daemon=True).start()
-                    print(f"[INFO] SMS dispatched (or logged) for {img_path}")
                 except Exception as e:
-                    print("[ERROR] Failed composing/sending SMS for", img_path, e)
+                    print('[WARN] could not save annotated image:', e)
+                    annotated_img = None
+
+                yes, info = notify_server_http(device_id=device_id, severity=severity, confidence=conf, image_path=img_path)
+                if not yes:
+                    print('[WARN] Notify server failed:', info)
+                else:
+                    print(f'[INFO] Server notified for {img_path}: {info}')
 
             except Exception as e:
-                print("[ERROR] Unexpected error in postprocessing for", img_path, e)
+                print('[Error] unexpected postprocess error for', img_path, e)
+
 
     def start(self, image):
         t_inf = threading.Thread(target=self.inference_worker, daemon=True)
