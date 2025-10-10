@@ -1,10 +1,7 @@
 import csv
-from datetime import datetime
 from pathlib import Path
-import sys
-from messaging.sms import TwilioSmsClient, MockSmsClient
-from messaging.composer import compose_sos
-from Config import config
+import requests
+from datetime import datetime
 
 csv_path = Path('logs') / "device_locations.csv"
 
@@ -87,52 +84,19 @@ def read_latest_for_device(device_id, path=csv_path):
     acc = rowdict.get("accuracy") or rowdict.get("acc")
     return {"timestamp": parsed_ts, "latitude": lat, "longitude": lon, "accuracy": acc, "raw_row": rowdict}
 
-# def send_device_location_sms(device_id, severity, image_path, annotated_path,
-#                              path=csv_path, sms_cfg=config.twilio_cfg):
-#     csv_path = Path(path)
-# 
-#     try:
-#         latest = read_latest_for_device(device_id, csv_path)
-# 
-#     except FileNotFoundError as e:
-#         return False, f"csv not found: {e}"
-# 
-#     except Exception as e:
-#         return False, f"Error reading csv: {e}"
-# 
-#     if not latest:
-#         return False, f"No location record for this device: {device_id}"
-# 
-#     ts = latest['timestamp']
-#     ts_str = ts.isoformat() if ts else None
-#     lat = latest['latitude']
-#     lon = latest['longitude']
-# 
-#     latlon = (lat, lon) if (lat is not None and lon is not None and str(lat).strip() and str(lon).strip()) else None
-# 
-#     message = compose_sos(ts_str, latlon, severity, image_path, sms_cfg)
-# 
-#     client = None
-# 
-#     if sms_cfg and sms_cfg.get("provider") == "twilio":
-#         sid = sms_cfg.get("sid")
-#         token = sms_cfg.get("token")
-#         from_no = sms_cfg.get("from")
-#         to_no = sms_cfg.get("to")
-#         if not sid or not token or not from_no:
-#             return False, "Twilio config incomplete (sid/token/from required)"
-# 
-#         try:
-#             client = TwilioSmsClient(sid, token, from_no, to=to_no)
-#         except Exception as e:
-#             return False, f"Failed to create Twilio client: {e}"
-# 
-#     else:
-#         # fallback to mock
-#         client = MockSmsClient(to=sms_cfg.get("to") if sms_cfg else None)
-# 
-#     try:
-#         client.send("\n".join(message) if isinstance(message, (list, tuple)) else str(message))
-#         return True, "Message sent (or logged for mock)"
-#     except Exception as e:
-#         return False, f"Failed to send SMS: {e}"
+SERVER_URL = "http://localhost:3000/api/detection"  # change if server is remote
+
+def notify_server_http(device_id: str, severity: str, confidence: float, image_path: str, timestamp: str = None):
+    payload = {
+        "device_id": device_id,
+        "severity": severity,
+        "confidence": float(confidence),
+        "image_path": image_path,
+        "timestamp": timestamp or (datetime.now().isoformat() + "Z")
+    }
+    try:
+        r = requests.post(SERVER_URL, json=payload, timeout=6)
+        r.raise_for_status()
+        return True, r.json() if r.headers.get('content-type','').startswith('application/json') else r.text
+    except Exception as e:
+        return False, str(e)
